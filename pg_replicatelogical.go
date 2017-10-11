@@ -106,6 +106,9 @@ func stmtNameFromPTD(ptd *parselogical.ParsedTestDecoding) (string, []string) {
 
 	keys := make([]string, 0, len(ptd.Fields))
 	for k := range ptd.Fields {
+		if !ptd.Fields[k].Quoted && ptd.Fields[k].String == "unchanged-toast-datum" {
+			continue // skip this field, as we do not know the value and it did not change
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys) // ensure the fields are sorted
@@ -183,6 +186,14 @@ func replicateMsg(targetConn *pgx.Conn, msg *pgx.ReplicationMessage) error {
 	stats.Lock()
 	defer stats.Unlock()
 
+	if hasTables {
+		if _, ok := tables[ptd.SchemaTable]; !ok {
+			stats.skipped++
+			ack(msg)
+			return nil
+		}
+	}
+
 	switch ptd.Operation {
 	case "UPDATE":
 		stats.updates++
@@ -195,14 +206,6 @@ func replicateMsg(targetConn *pgx.Conn, msg *pgx.ReplicationMessage) error {
 	if ptd.Operation != "UPDATE" && ptd.Operation != "INSERT" {
 		ack(msg)
 		return nil
-	}
-
-	if hasTables {
-		if _, ok := tables[ptd.SchemaTable]; !ok {
-			stats.skipped++
-			ack(msg)
-			return nil
-		}
 	}
 
 	err = ptd.ParseColumns()
@@ -222,10 +225,10 @@ func replicateMsg(targetConn *pgx.Conn, msg *pgx.ReplicationMessage) error {
 	for i, k := range keys {
 		v := ptd.Fields[k]
 
-		if v.Valid {
-			toInsert[i] = v.String
-		} else {
+		if !v.Quoted && v.String == "null" {
 			toInsert[i] = nil
+		} else {
+			toInsert[i] = v.String
 		}
 	}
 
